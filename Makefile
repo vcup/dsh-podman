@@ -36,7 +36,7 @@ GOFMT_SOURCES := $(shell find cmd internal scripts -type f -name '*.go' -print)
 TS_SOURCES = "src/**/*.ts" "src/**/*.tsx" "scripts/**/*.mjs"
 MD_SOURCES = "**/*.md"
 
-.PHONY: all build build-go vet test test-go fmt fmt-go fmt-ts fmt-md fmt-check fmt-check-go fmt-check-ts fmt-check-md image image-go image-orchestrator image-guestagent image-gateway image-dsh download-licenses pnpm-install pnpm-build pnpm-test pnpm-prune clean proto proto-check
+.PHONY: all build build-go vet test test-go test-workflow-control fmt fmt-go fmt-ts fmt-md fmt-check fmt-check-go fmt-check-ts fmt-check-md image image-go image-orchestrator image-guestagent image-gateway image-dsh download-licenses pnpm-install pnpm-build pnpm-test pnpm-prune clean proto proto-check
 
 all: build
 
@@ -49,6 +49,11 @@ test: test-go pnpm-test
 
 test-go:
 	$(GO) test $(GO_BUILD_FLAGS) ./...
+
+# Real Go guest + gRPC + Node subprocess control transport (Linux only).
+# Optionally pass DSH_PODMAN_TEST_PTC_BOOTSTRAP to exercise Harness's worker.
+test-workflow-control: pnpm-build $(BIN_DIR)/$(GOOS)-$(GOARCH)/dsh-podman-guest-agent
+	DSH_PODMAN_TEST_GUEST_BIN="$(abspath $(BIN_DIR)/$(GOOS)-$(GOARCH)/dsh-podman-guest-agent)" node --test scripts/test-workflow-control.mjs
 
 # Formatting. fmt rewrites in place, fmt-check verifies; both cover every
 # language the project formats (Go, TypeScript, Markdown). JSON, YAML and
