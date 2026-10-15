@@ -39,6 +39,7 @@ dsh-podman 将所有的 shell 执行与文件访问都路由到一次性、按�
 - [配置](docs/configuration.zh.md)
 - [使用](docs/usage.zh.md)
 - [开发](docs/development.zh.md)
+- [工作流控制通道](docs/workflow-control.zh.md)
 - [卸载](docs/uninstall.zh.md)
 
 ## AI 使用声明

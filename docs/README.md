@@ -23,6 +23,8 @@ SPDX-License-Identifier: MIT
   model.
 - [Development](development.md) — build the plugin from this repository and run
   it from a development checkout.
+- [Workflow control transport](workflow-control.md) — control channels,
+  regression tests, deployment, and transport limits.
 - [Development container setup prompt](development-prompt.md) — the prompt that
   creates the development image, volume and container.
 - [Uninstall](uninstall.md) — remove dsh-podman and the Quadlet units, and run
@@ -39,6 +41,8 @@ SPDX-License-Identifier: MIT
   环境变量，以及插件的界面设置。
 - [使用](usage.zh.md) — 面向模型的工具、Podman 页面以及镜像模型。
 - [开发](development.zh.md) — 从本仓库构建插件，并在开发检出环境中运行。
+- [工作流控制通道](workflow-control.zh.md) —
+  控制通道、回归测试、部署与传输限制。
 - [开发容器设置提示词](development-prompt.zh.md) —
   用于创建开发镜像、卷与容器的提示词。
 - [卸载](uninstall.zh.md) — 移除 dsh-podman 与 Quadlet
