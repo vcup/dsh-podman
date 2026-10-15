@@ -172,10 +172,7 @@ func (s *Server) Exec(stream guest.WorkspaceGuestAgent_ExecServer) error {
 		var exitErr *osexec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			exit = int32(exitErr.ExitCode())
-			if waitStatus, ok := exitErr.Sys().(interface {
-				Signaled() bool
-				Signal() os.Signal
-			}); ok && waitStatus.Signaled() {
+			if waitStatus, ok := exitErr.Sys().(syscall.WaitStatus); ok && waitStatus.Signaled() {
 				signaled = true
 				signalName = waitStatus.Signal().String()
 			}
