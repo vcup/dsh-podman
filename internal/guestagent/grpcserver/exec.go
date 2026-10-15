@@ -30,7 +30,7 @@ func (s *Server) Exec(stream guest.WorkspaceGuestAgent_ExecServer) error {
 	if start == nil {
 		return status.Error(codes.InvalidArgument, "first exec message must be start")
 	}
-	argv := first.GetStart().GetArgv()
+	argv := start.GetArgv()
 	argv0 := ""
 	if len(argv) > 0 {
 		argv0 = argv[0]
@@ -44,48 +44,65 @@ func (s *Server) Exec(stream guest.WorkspaceGuestAgent_ExecServer) error {
 	if err != nil {
 		return err
 	}
-	process, err := s.Processes.Start(stream.Context(), start.GetArgv(), start.GetCwd(), start.GetEnv(), identity.Options{Uid: uid, Gid: gid, Groups: start.GetGroups()}, start.GetUnsetEnv()...)
+	process, err := s.Processes.Start(stream.Context(), argv, start.GetCwd(), start.GetEnv(), identity.Options{Uid: uid, Gid: gid, Groups: start.GetGroups()}, start.GetUnsetEnv()...)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	// The process is registered before it is started, so every path that
-	// gives up before Command.Start must drop it again. A leaked entry keeps
-	// a process with no os.Process in the map for the agent's lifetime, where
-	// any later Signal for that id would find it.
-	started := false
-	defer func() {
-		if !started {
-			s.Processes.Remove(process.ID)
-		}
-	}()
+	defer s.Processes.Remove(process.ID)
+	control, err := prepareExecControl(process.Command, start.GetControlPipe())
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+	defer control.close()
 	stdout, err := process.Command.StdoutPipe()
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
+	defer stdout.Close()
 	stderr, err := process.Command.StderrPipe()
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
-	// Only a caller that will send stdin gets a pipe. Without one the child
-	// keeps Go's default stdin (/dev/null): a pipe is a non-TTY stdin, and a
-	// tool like ripgrep reads stdin instead of the working directory when it is
-	// given no path.
+	defer stderr.Close()
+	// With no requested stdin pipe keep /dev/null: tools such as ripgrep
+	// interpret a non-TTY pipe as input instead of searching the directory.
 	var stdin io.WriteCloser
 	if start.GetStdinPipe() {
 		stdin, err = process.Command.StdinPipe()
 		if err != nil {
 			return status.Error(codes.Internal, err.Error())
 		}
+		defer stdin.Close()
 	}
 	if err := process.Command.Start(); err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	started = true
-	// Publish the started handle so Signal never reads Command.Process while
-	// Start is still writing it.
+	if control != nil {
+		_ = control.child.Close()
+	}
+	waited := false
+	defer func() {
+		// A failed initial Send must not leave a live process or a zombie.
+		if !waited {
+			_ = process.Command.Cancel()
+			_ = process.Command.Wait()
+		}
+	}()
+	// Publish the handle under the process lock; Signal must not race Start.
 	process.SetProcess(process.Command.Process)
+	stopClose := context.AfterFunc(stream.Context(), func() {
+		control.close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+	})
+	defer stopClose()
 	spillStdout := s.newSpill(start.GetSpillStdout().GetPath(), start.GetSpillStdout().GetMaxBytes())
 	spillStderr := s.newSpill(start.GetSpillStderr().GetPath(), start.GetSpillStderr().GetMaxBytes())
+	defer spillStdout.close()
+	defer spillStderr.close()
 	var sendMu sync.Mutex
 	send := func(output *guest.ExecOutput) error {
 		output.ProcessId = process.ID
@@ -93,74 +110,105 @@ func (s *Server) Exec(stream guest.WorkspaceGuestAgent_ExecServer) error {
 		defer sendMu.Unlock()
 		return stream.Send(output)
 	}
-	// Report the process id before any output. A caller that must cancel a
-	// silent command (a background job, a timed-out exec) can only signal an id
-	// it has been told, and a command that produces no output until it exits
-	// would otherwise leave that caller unable to signal it at all.
-	if err := send(&guest.ExecOutput{}); err != nil {
+	// Acknowledge the descriptor before output; old guests cannot silently
+	// accept a requested channel and leave the workflow waiting for readiness.
+	if err := send(&guest.ExecOutput{ControlReady: control != nil}); err != nil {
 		return err
 	}
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	var copies sync.WaitGroup
-	copyOutput := func(reader io.Reader, stderr bool, spill *spillWriter) {
+	copyOutput := func(reader io.Reader, channel string, spill *spillWriter) {
 		defer copies.Done()
 		buffer := make([]byte, 32*1024)
 		for {
 			n, readErr := reader.Read(buffer)
 			if n > 0 {
 				data := append([]byte(nil), buffer[:n]...)
-				spill.write(data)
+				if spill != nil {
+					spill.write(data)
+				}
 				output := &guest.ExecOutput{}
-				if stderr {
+				switch channel {
+				case "stderr":
 					output.Payload = &guest.ExecOutput_StderrChunk{StderrChunk: data}
-				} else {
+				case "control":
+					output.Payload = &guest.ExecOutput_ControlChunk{ControlChunk: data}
+				default:
 					output.Payload = &guest.ExecOutput_StdoutChunk{StdoutChunk: data}
 				}
 				if sendErr := send(output); sendErr != nil {
 					errCh <- sendErr
+					_ = process.Command.Cancel()
 					return
 				}
 			}
 			if readErr != nil {
 				if !errors.Is(readErr, io.EOF) {
 					errCh <- readErr
+				} else if channel == "control" {
+					if err := send(&guest.ExecOutput{Payload: &guest.ExecOutput_ControlEof{ControlEof: true}}); err != nil {
+						errCh <- err
+					}
 				}
 				return
 			}
 		}
 	}
 	copies.Add(2)
-	go copyOutput(stdout, false, spillStdout)
-	go copyOutput(stderr, true, spillStderr)
+	go copyOutput(stdout, "stdout", spillStdout)
+	go copyOutput(stderr, "stderr", spillStderr)
+	if control != nil {
+		copies.Add(1)
+		go copyOutput(control.parent, "control", nil)
+	}
 	go func() {
+		defer func() {
+			if stdin != nil {
+				_ = stdin.Close()
+			}
+			control.closeWrite()
+		}()
+		stdinOpen := stdin != nil
+		controlOpen := control != nil
 		for {
 			input, recvErr := stream.Recv()
 			if recvErr != nil {
-				if stdin != nil {
-					_ = stdin.Close()
-				}
 				return
 			}
-			if stdin == nil {
-				continue
-			}
-			if chunk := input.GetStdinChunk(); len(chunk) > 0 {
-				if _, writeErr := stdin.Write(chunk); writeErr != nil {
+			switch payload := input.Payload.(type) {
+			case *guest.ExecInput_StdinEof:
+				if payload.StdinEof && stdinOpen {
 					_ = stdin.Close()
-					return
+					stdinOpen = false
+				}
+			case *guest.ExecInput_ControlEof:
+				if payload.ControlEof && controlOpen {
+					control.closeWrite()
+					controlOpen = false
+				}
+			case *guest.ExecInput_StdinChunk:
+				if stdinOpen {
+					if _, err := stdin.Write(payload.StdinChunk); err != nil {
+						_ = stdin.Close()
+						stdinOpen = false
+					}
+				}
+			case *guest.ExecInput_ControlChunk:
+				if controlOpen {
+					if _, err := control.parent.Write(payload.ControlChunk); err != nil {
+						control.closeWrite()
+						controlOpen = false
+					}
 				}
 			}
 		}
 	}()
-	// Drain both pipes to EOF before reaping the process: Command.Wait closes
-	// the pipe read ends, which would discard output the copying goroutines
-	// have not read yet. The exit message is sent only after this, so the spill
-	// validity and the final chunks are final when the caller sees them.
+	// Read every final byte before Wait closes the stdout/stderr pipe ends.
+	// The control read half is independent of both caller input EOFs.
 	copies.Wait()
-	// Read what the copiers recorded instead of dropping it: a send or read
-	// failure means the caller's stream is likely gone.
 	copyErr := drainErr(errCh)
 	waitErr := process.Command.Wait()
+	waited = true
 	spillStdout.close()
 	spillStderr.close()
 	s.Processes.Remove(process.ID)
@@ -186,7 +234,6 @@ func (s *Server) Exec(stream guest.WorkspaceGuestAgent_ExecServer) error {
 		StderrSpillValid: spillStderr.valid(),
 	}}}); err != nil {
 		if copyErr != nil {
-			// The stream is confirmed dead; the copy failure is the cause.
 			return copyErr
 		}
 		return err
@@ -199,7 +246,7 @@ func (s *Server) Exec(stream guest.WorkspaceGuestAgent_ExecServer) error {
 }
 
 // drainErr returns the first error the output copiers recorded, if any. The
-// channel is buffered for both copiers, so this never blocks.
+// channel is buffered for all copiers, so this never blocks.
 func drainErr(errCh <-chan error) error {
 	var first error
 	for {

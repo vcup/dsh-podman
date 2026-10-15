@@ -169,12 +169,17 @@ func (x *PingResponse) GetCommit() string {
 	return ""
 }
 
+// stdin and control have independent write halves. Closing the request stream
+// remains an EOF for both, for callers that do not multiplex input channels.
 type ExecInput struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*ExecInput_Start
 	//	*ExecInput_StdinChunk
+	//	*ExecInput_ControlChunk
+	//	*ExecInput_StdinEof
+	//	*ExecInput_ControlEof
 	Payload       isExecInput_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -235,6 +240,33 @@ func (x *ExecInput) GetStdinChunk() []byte {
 	return nil
 }
 
+func (x *ExecInput) GetControlChunk() []byte {
+	if x != nil {
+		if x, ok := x.Payload.(*ExecInput_ControlChunk); ok {
+			return x.ControlChunk
+		}
+	}
+	return nil
+}
+
+func (x *ExecInput) GetStdinEof() bool {
+	if x != nil {
+		if x, ok := x.Payload.(*ExecInput_StdinEof); ok {
+			return x.StdinEof
+		}
+	}
+	return false
+}
+
+func (x *ExecInput) GetControlEof() bool {
+	if x != nil {
+		if x, ok := x.Payload.(*ExecInput_ControlEof); ok {
+			return x.ControlEof
+		}
+	}
+	return false
+}
+
 type isExecInput_Payload interface {
 	isExecInput_Payload()
 }
@@ -247,9 +279,27 @@ type ExecInput_StdinChunk struct {
 	StdinChunk []byte `protobuf:"bytes,2,opt,name=stdin_chunk,json=stdinChunk,proto3,oneof"`
 }
 
+type ExecInput_ControlChunk struct {
+	ControlChunk []byte `protobuf:"bytes,3,opt,name=control_chunk,json=controlChunk,proto3,oneof"`
+}
+
+type ExecInput_StdinEof struct {
+	StdinEof bool `protobuf:"varint,4,opt,name=stdin_eof,json=stdinEof,proto3,oneof"`
+}
+
+type ExecInput_ControlEof struct {
+	ControlEof bool `protobuf:"varint,5,opt,name=control_eof,json=controlEof,proto3,oneof"`
+}
+
 func (*ExecInput_Start) isExecInput_Payload() {}
 
 func (*ExecInput_StdinChunk) isExecInput_Payload() {}
+
+func (*ExecInput_ControlChunk) isExecInput_Payload() {}
+
+func (*ExecInput_StdinEof) isExecInput_Payload() {}
+
+func (*ExecInput_ControlEof) isExecInput_Payload() {}
 
 type ExecStart struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -263,6 +313,7 @@ type ExecStart struct {
 	Gid           *wrapperspb.Int32Value `protobuf:"bytes,8,opt,name=gid,proto3" json:"gid,omitempty"`
 	Groups        []uint32               `protobuf:"varint,9,rep,packed,name=groups,proto3" json:"groups,omitempty"`
 	StdinPipe     bool                   `protobuf:"varint,10,opt,name=stdin_pipe,json=stdinPipe,proto3" json:"stdin_pipe,omitempty"`
+	ControlPipe   bool                   `protobuf:"varint,11,opt,name=control_pipe,json=controlPipe,proto3" json:"control_pipe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -367,6 +418,15 @@ func (x *ExecStart) GetStdinPipe() bool {
 	return false
 }
 
+func (x *ExecStart) GetControlPipe() bool {
+	if x != nil {
+		return x.ControlPipe
+	}
+	return false
+}
+
+// control_ready acknowledges the requested descriptor in the first process-id
+// message, so a new client can fail clearly against an older guest agent.
 type ExecOutput struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Payload:
@@ -374,8 +434,11 @@ type ExecOutput struct {
 	//	*ExecOutput_StdoutChunk
 	//	*ExecOutput_StderrChunk
 	//	*ExecOutput_Exit
+	//	*ExecOutput_ControlChunk
+	//	*ExecOutput_ControlEof
 	Payload       isExecOutput_Payload `protobuf_oneof:"payload"`
 	ProcessId     string               `protobuf:"bytes,4,opt,name=process_id,json=processId,proto3" json:"process_id,omitempty"`
+	ControlReady  bool                 `protobuf:"varint,7,opt,name=control_ready,json=controlReady,proto3" json:"control_ready,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -444,11 +507,36 @@ func (x *ExecOutput) GetExit() *ExecExit {
 	return nil
 }
 
+func (x *ExecOutput) GetControlChunk() []byte {
+	if x != nil {
+		if x, ok := x.Payload.(*ExecOutput_ControlChunk); ok {
+			return x.ControlChunk
+		}
+	}
+	return nil
+}
+
+func (x *ExecOutput) GetControlEof() bool {
+	if x != nil {
+		if x, ok := x.Payload.(*ExecOutput_ControlEof); ok {
+			return x.ControlEof
+		}
+	}
+	return false
+}
+
 func (x *ExecOutput) GetProcessId() string {
 	if x != nil {
 		return x.ProcessId
 	}
 	return ""
+}
+
+func (x *ExecOutput) GetControlReady() bool {
+	if x != nil {
+		return x.ControlReady
+	}
+	return false
 }
 
 type isExecOutput_Payload interface {
@@ -467,11 +555,23 @@ type ExecOutput_Exit struct {
 	Exit *ExecExit `protobuf:"bytes,3,opt,name=exit,proto3,oneof"`
 }
 
+type ExecOutput_ControlChunk struct {
+	ControlChunk []byte `protobuf:"bytes,5,opt,name=control_chunk,json=controlChunk,proto3,oneof"`
+}
+
+type ExecOutput_ControlEof struct {
+	ControlEof bool `protobuf:"varint,6,opt,name=control_eof,json=controlEof,proto3,oneof"`
+}
+
 func (*ExecOutput_StdoutChunk) isExecOutput_Payload() {}
 
 func (*ExecOutput_StderrChunk) isExecOutput_Payload() {}
 
 func (*ExecOutput_Exit) isExecOutput_Payload() {}
+
+func (*ExecOutput_ControlChunk) isExecOutput_Payload() {}
+
+func (*ExecOutput_ControlEof) isExecOutput_Payload() {}
 
 type ExecExit struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
@@ -3074,12 +3174,16 @@ const file_dshguest_v1_guest_proto_rawDesc = "" +
 	"\vPingRequest\"@\n" +
 	"\fPingResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
-	"\x06commit\x18\x02 \x01(\tR\x06commit\"i\n" +
+	"\x06commit\x18\x02 \x01(\tR\x06commit\"\xd2\x01\n" +
 	"\tExecInput\x12.\n" +
 	"\x05start\x18\x01 \x01(\v2\x16.dshguest.v1.ExecStartH\x00R\x05start\x12!\n" +
 	"\vstdin_chunk\x18\x02 \x01(\fH\x00R\n" +
-	"stdinChunkB\t\n" +
-	"\apayload\"\xc8\x03\n" +
+	"stdinChunk\x12%\n" +
+	"\rcontrol_chunk\x18\x03 \x01(\fH\x00R\fcontrolChunk\x12\x1d\n" +
+	"\tstdin_eof\x18\x04 \x01(\bH\x00R\bstdinEof\x12!\n" +
+	"\vcontrol_eof\x18\x05 \x01(\bH\x00R\n" +
+	"controlEofB\t\n" +
+	"\apayload\"\xeb\x03\n" +
 	"\tExecStart\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12\x10\n" +
 	"\x03cwd\x18\x02 \x01(\tR\x03cwd\x121\n" +
@@ -3092,17 +3196,22 @@ const file_dshguest_v1_guest_proto_rawDesc = "" +
 	"\x06groups\x18\t \x03(\rR\x06groups\x12\x1d\n" +
 	"\n" +
 	"stdin_pipe\x18\n" +
-	" \x01(\bR\tstdinPipe\x1a6\n" +
+	" \x01(\bR\tstdinPipe\x12!\n" +
+	"\fcontrol_pipe\x18\v \x01(\bR\vcontrolPipe\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xad\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9c\x02\n" +
 	"\n" +
 	"ExecOutput\x12#\n" +
 	"\fstdout_chunk\x18\x01 \x01(\fH\x00R\vstdoutChunk\x12#\n" +
 	"\fstderr_chunk\x18\x02 \x01(\fH\x00R\vstderrChunk\x12+\n" +
-	"\x04exit\x18\x03 \x01(\v2\x15.dshguest.v1.ExecExitH\x00R\x04exit\x12\x1d\n" +
+	"\x04exit\x18\x03 \x01(\v2\x15.dshguest.v1.ExecExitH\x00R\x04exit\x12%\n" +
+	"\rcontrol_chunk\x18\x05 \x01(\fH\x00R\fcontrolChunk\x12!\n" +
+	"\vcontrol_eof\x18\x06 \x01(\bH\x00R\n" +
+	"controlEof\x12\x1d\n" +
 	"\n" +
-	"process_id\x18\x04 \x01(\tR\tprocessIdB\t\n" +
+	"process_id\x18\x04 \x01(\tR\tprocessId\x12#\n" +
+	"\rcontrol_ready\x18\a \x01(\bR\fcontrolReadyB\t\n" +
 	"\apayload\"\xb7\x01\n" +
 	"\bExecExit\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x1a\n" +
@@ -3457,11 +3566,16 @@ func file_dshguest_v1_guest_proto_init() {
 	file_dshguest_v1_guest_proto_msgTypes[2].OneofWrappers = []any{
 		(*ExecInput_Start)(nil),
 		(*ExecInput_StdinChunk)(nil),
+		(*ExecInput_ControlChunk)(nil),
+		(*ExecInput_StdinEof)(nil),
+		(*ExecInput_ControlEof)(nil),
 	}
 	file_dshguest_v1_guest_proto_msgTypes[4].OneofWrappers = []any{
 		(*ExecOutput_StdoutChunk)(nil),
 		(*ExecOutput_StderrChunk)(nil),
 		(*ExecOutput_Exit)(nil),
+		(*ExecOutput_ControlChunk)(nil),
+		(*ExecOutput_ControlEof)(nil),
 	}
 	file_dshguest_v1_guest_proto_msgTypes[11].OneofWrappers = []any{
 		(*WriteFileChunk_Start)(nil),
