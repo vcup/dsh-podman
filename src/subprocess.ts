@@ -12,6 +12,7 @@ import { openGuestTerminal } from "./guest-terminal.js";
 import { globCwd, remoteArgv, unaryGuest } from "./guest-rpc.js";
 import { metadata, type WorkspaceResolver } from "./workspace-binding.js";
 import { PassThrough } from "node:stream";
+import { ExecInputs } from "./exec-inputs.js";
 import { SubprocessExecutableNotFoundError } from "@deepseek-ai/dsh-subprocess";
 
 export interface SubprocessProvider {
@@ -60,9 +61,6 @@ export function createSubprocessProvider(
       defaultShell: "/bin/sh",
     }),
     spawn: (spec: any) => {
-      // A pre-aborted spawn is rejected synchronously with a stable Error,
-      // mirroring the local backend, rather than starting a process that would
-      // be terminated immediately.
       if (spec.signal?.aborted) {
         let reason = "aborted";
         try {
@@ -84,11 +82,16 @@ export function createSubprocessProvider(
       const stderrSpill = spillTargetFor(spec.stdio?.stderr, "stderr");
       const stdoutReader = outputReader(spec.stdio?.stdout, stdoutSpill.spec);
       const stderrReader = outputReader(spec.stdio?.stderr, stderrSpill.spec);
+      const inputs = new ExecInputs(
+        spec.stdio?.stdin === "pipe",
+        spec.stdio?.control === "pipe",
+      );
       const state = {
         pid: -1,
-        stdin: undefined as any,
+        stdin: inputs.stdin,
         stdout: spec.stdio?.stdout === "pipe" ? new PassThrough() : undefined,
         stderr: spec.stdio?.stderr === "pipe" ? new PassThrough() : undefined,
+        control: inputs.control,
       };
       let processBinding: any;
       let terminated = false;
@@ -102,9 +105,9 @@ export function createSubprocessProvider(
           }).catch(() => {});
         }
       };
-      // The harness's termination procedure: SIGTERM, then SIGKILL once the
-      // spec's grace period elapses without an exit.
+      // SIGTERM, then SIGKILL once the grace period elapses without an exit.
       const terminate = (): void => {
+        if (exited) return;
         terminated = true;
         signalProcess("SIGTERM");
         if (killTimer === undefined) {
@@ -118,74 +121,82 @@ export function createSubprocessProvider(
         }
       };
       let settled = false;
-      // A piped consumer that falls behind applies backpressure: the guest
-      // stream is paused until every outstanding drain (or close) has fired, so
-      // a fast producer cannot grow a PassThrough without bound.
-      let pendingDrains = 0;
-      const applyBackpressure = (stream: any, target: PassThrough): void => {
-        pendingDrains++;
+      const drains = new Set<() => void>();
+      const pauseStream = (stream: any): () => void => {
         stream.pause?.();
-        let released = false;
         const release = (): void => {
-          if (released) return;
-          released = true;
-          target.removeListener("drain", release);
-          target.removeListener("close", release);
-          pendingDrains--;
-          if (pendingDrains === 0) stream.resume?.();
+          if (!drains.delete(release)) return;
+          if (drains.size === 0) stream.resume?.();
         };
-        target.once("drain", release);
-        // A destroyed target never drains; its close must release the pause or
-        // the exit message would stay stuck behind it.
-        target.once("close", release);
+        drains.add(release);
+        return release;
       };
       const writeChunk = (
         stream: any,
         target: PassThrough | undefined,
         data: Buffer,
       ): void => {
-        if (target === undefined) return;
-        if (!target.write(data)) applyBackpressure(stream, target);
+        if (target === undefined || target.destroyed) return;
+        if (!target.write(data)) {
+          const release = pauseStream(stream);
+          const resume = (): void => {
+            target.removeListener("drain", resume);
+            target.removeListener("close", resume);
+            release();
+          };
+          target.once("drain", resume);
+          target.once("close", resume);
+        }
       };
-      // A ripgrep discovery listing runs from its search root, so a pattern
-      // containing "/" anchors to the path the harness passed; the workspace
-      // binding still resolves from the caller's cwd.
+      const closeHandles = (error?: Error): void => {
+        exited = true;
+        if (killTimer !== undefined) clearTimeout(killTimer);
+        spec.signal?.removeEventListener("abort", terminate);
+        inputs.finish(error);
+        for (const release of [...drains]) release();
+        state.stdout?.end();
+        state.stderr?.end();
+      };
+      // A discovery listing runs from its search root; the workspace binding
+      // still resolves from the caller's cwd.
       const runCwd = globCwd(spec.argv, spec.cwd) ?? spec.cwd;
       const done = resolver.resolve(spec.cwd).then(
         (binding) =>
           new Promise<any>((resolveDone, reject) => {
             processBinding = binding;
             const stream = (binding.guest as any).exec(metadata(binding.token));
-            // finish settles the handle exactly once and tears it down however
-            // the process ends: an exit message, a stream error, or a stream
-            // that ends without one. The output pipes and spill files are
-            // resolved on every path, so a failed exec leaves no half-open
-            // handle, no hung reader, and no orphaned spill.
             const finish = (
               error: Error | undefined,
               exit?: { exitCode: number; signal: string | null },
             ): void => {
               if (settled) return;
               settled = true;
-              exited = true;
-              if (killTimer !== undefined) {
-                clearTimeout(killTimer);
-                killTimer = undefined;
-              }
-              // A pause applied for backpressure must not outlive the process,
-              // or the exit/error message could stay stuck behind it.
-              if (pendingDrains > 0) {
-                pendingDrains = 0;
-                stream.resume?.();
-              }
-              state.stdout?.end();
-              state.stderr?.end();
+              closeHandles(error);
+              // Cancelling the RPC cancels the guest command context and its
+              // whole process group even if Signal could not reach it.
+              if (error) stream.cancel?.();
               discardUnneededSpill(binding, stdoutReader);
               discardUnneededSpill(binding, stderrReader);
               if (error === undefined) resolveDone(exit);
               else reject(error);
             };
+            let started = false;
             stream.on("data", (output: any) => {
+              if (settled) return;
+              if (output.processId) {
+                state.pid = Number(output.processId);
+                if (!started && state.control && output.controlReady !== true) {
+                  terminate();
+                  finish(
+                    new Error(
+                      "guest agent does not support the requested control pipe; rebuild the guest agent and recreate this container",
+                    ),
+                  );
+                  return;
+                }
+                started = true;
+                if (terminated) terminate();
+              }
               if (output.stdoutChunk) {
                 const data = Buffer.from(output.stdoutChunk);
                 stdoutReader?.append(data);
@@ -193,10 +204,6 @@ export function createSubprocessProvider(
                 if (spec.stdio?.stdout === "inherit") {
                   process.stdout.write(data);
                 }
-              }
-              if (output.processId) {
-                state.pid = Number(output.processId);
-                if (terminated) terminate();
               }
               if (output.stderrChunk) {
                 const data = Buffer.from(output.stderrChunk);
@@ -206,6 +213,13 @@ export function createSubprocessProvider(
                   process.stderr.write(data);
                 }
               }
+              if (output.controlChunk) {
+                inputs.receive(
+                  Buffer.from(output.controlChunk),
+                  () => pauseStream(stream),
+                );
+              }
+              if (output.controlEof) inputs.receiveEOF();
               if (output.exit) {
                 stdoutReader?.setSpillValid(
                   Boolean(output.exit.stdoutSpillValid),
@@ -220,15 +234,10 @@ export function createSubprocessProvider(
               }
             });
             stream.on("error", (error: unknown) => {
-              // The guest connection failed: stop the process if it is still
-              // reachable, then release the caller instead of leaving it
-              // pending on a stream that will never carry an exit message.
               terminate();
               finish(error instanceof Error ? error : new Error(String(error)));
             });
             stream.on("end", () => {
-              // A stream that ends without an exit message (guest restart,
-              // dropped socket) must not leave the caller pending forever.
               if (settled) return;
               terminate();
               finish(new Error("exec stream ended before the process exited"));
@@ -240,10 +249,8 @@ export function createSubprocessProvider(
                 cwd: runCwd,
                 env: env.env,
                 unsetEnv: env.unsetEnv,
-                // A caller that will not send stdin leaves the child on
-                // /dev/null: a pipe would be a non-TTY stdin, and tools like
-                // ripgrep then read stdin instead of the working directory.
                 stdinPipe: spec.stdio?.stdin === "pipe",
+                controlPipe: spec.stdio?.control === "pipe",
                 ...(stdoutSpill.target !== undefined
                   ? { spillStdout: stdoutSpill.target }
                   : {}),
@@ -252,17 +259,14 @@ export function createSubprocessProvider(
                   : {}),
               },
             });
-            if (spec.stdio?.stdin !== "pipe") stream.end();
-            else {
-              state.stdin = new PassThrough();
-              state.stdin.on(
-                "data",
-                (data: Buffer) => stream.write({ stdinChunk: data }),
-              );
-              state.stdin.on("end", () => stream.end());
-            }
+            inputs.bind(stream);
           }),
-      );
+      ).catch((error: unknown) => {
+        // Workspace resolution and exec creation can fail before the RPC
+        // handlers exist. Early caller writes must settle on that path too.
+        closeHandles(error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      });
       if (spec.signal !== undefined) {
         if (spec.signal.aborted) terminate();
         else spec.signal.addEventListener("abort", terminate, { once: true });
@@ -271,18 +275,15 @@ export function createSubprocessProvider(
       void done.finally(() => live.delete(terminate)).catch(() => {});
       return {
         ...state,
-        // The harness's SubprocessHandle declares a control channel; this
-        // provider runs every process over gRPC, so none exists.
-        control: undefined,
+        get pid() {
+          return state.pid;
+        },
         collected: {
           ...(stdoutReader === undefined ? {} : { stdout: stdoutReader }),
           ...(stderrReader === undefined ? {} : { stderr: stderrReader }),
         },
         done,
         terminate,
-        // Mirror the local backend's `waitWithAbort`: a pre-aborted or
-        // aborting signal returns false instead of waiting for the managed
-        // range, while a provider failure still propagates.
         waitForExit: (signal?: AbortSignal) => {
           if (signal?.aborted) {
             void done.catch(() => {});

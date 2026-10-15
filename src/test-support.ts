@@ -518,8 +518,9 @@ export class FakeExecStream extends EventEmitter {
   ) {
     super();
   }
-  write(message: any): boolean {
+  write(message: any, callback?: (error?: Error) => void): boolean {
     this.starts.push(message);
+    callback?.();
     return true;
   }
   end(): void {
