@@ -6,6 +6,8 @@ SPDX-License-Identifier: MIT
 
 # Workflow/PTC 执行环境分析与修复提案
 
+[English](workflow-ptc-design.md) | 中文
+
 状态：设计讨论，尚未实现。本文区分可检查的代码行为、部署前提与拟议改动。Harness
 运行时、配置档和发布产物均须按部署所用的确切版本复核。本文引用的仓库实现以代码基线
 `5221fff3d5e08b1e54ab349a67db82d245dc73ac`

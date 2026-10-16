@@ -25,6 +25,8 @@ SPDX-License-Identifier: MIT
   it from a development checkout.
 - [Workflow control transport](workflow-control.md) — control channels,
   regression tests, deployment, and transport limits.
+- [Workflow/PTC execution design](workflow-ptc-design.md) — a design proposal
+  for target-bound execution, runtime supply, and file access.
 - [Development container setup prompt](development-prompt.md) — the prompt that
   creates the development image, volume and container.
 - [Uninstall](uninstall.md) — remove dsh-podman and the Quadlet units, and run
@@ -43,6 +45,8 @@ SPDX-License-Identifier: MIT
 - [开发](development.zh.md) — 从本仓库构建插件，并在开发检出环境中运行。
 - [工作流控制通道](workflow-control.zh.md) —
   控制通道、回归测试、部署与传输限制。
+- [Workflow/PTC 执行环境提案](workflow-ptc-design.zh.md) —
+  目标绑定的执行、运行时供应与文件访问设计。
 - [开发容器设置提示词](development-prompt.zh.md) —
   用于创建开发镜像、卷与容器的提示词。
 - [卸载](uninstall.zh.md) — 移除 dsh-podman 与 Quadlet
