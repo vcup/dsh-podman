@@ -4,42 +4,44 @@ SPDX-FileCopyrightText: 2026 dsh-podman contributors
 SPDX-License-Identifier: MIT
 -->
 
-# dsh-podman 领域术语
+# dsh-podman Domain Terms
 
-本文统一工作区执行与 Workflow/PTC 讨论中使用的环境、资源和文件语义。
+This glossary defines the environment, resource, and file terms used in
+dsh-podman.
 
 ## Language
 
-**DSH world（DSH 运行环境）**: 运行 Harness 编排逻辑的环境。 _Avoid_:
-未限定的“host”或“宿主机”。
+**DSH world**: The environment that runs Harness orchestration logic. _Avoid_:
+Ambiguous uses of “host” or “machine”.
 
-**Execution world（执行环境）**:
-一次执行可见的文件、可执行程序与环境变量所构成的环境；路径按该环境解析。
-_Avoid_: 未限定的“本地”。
+**Execution world**: The environment whose files, executables, and variables are
+visible to a particular execution. _Avoid_: Unqualified “local”.
 
-**Workspace（工作区）**: 一个项目及其关联执行资源的工作范围。
+**Workspace**: A project and the execution resources associated with it.
 
-**DSH profile（DSH 配置档）**: Harness 插件与配置的组合，用于定义 Harness
-运行环境。 _Avoid_: “workspace image”。
+**DSH profile**: A set of Harness plugins and configuration that defines the
+Harness runtime environment. _Avoid_: “Workspace image”.
 
-**Workspace image（工作区镜像）**: 创建工作区容器文件系统的镜像。 _Avoid_:
-未限定的“DSH image”。
+**Workspace image**: A container image used to create a workspace container's
+filesystem. _Avoid_: Unqualified “DSH image”.
 
-**PTC worker（PTC 执行进程）**: 在选定 execution world 中执行程序并与 Harness
-交换调用和结果的进程。 _Avoid_: 将 worker 与 workflow 编排逻辑统称为“workflow”。
+**PTC worker**: A process that executes a program in a selected execution world
+and exchanges calls and results with Harness. _Avoid_: Using “workflow” to mean
+both the worker and Harness orchestration logic.
 
-**Execution scope（执行作用域）**: 一个 workflow invocation 在授权
-workspace/container 中执行时所关联的目标上下文。
+**Execution scope**: The target context associated with a workflow invocation in
+an authorized workspace and container.
 
-**Runtime closure（运行时闭包）**: 在一个 execution world 中启动 PTC worker
-所需的兼容 Node、worker bundle、bootstrap 与依赖集合。
+**Runtime closure**: The compatible Node, worker bundle, bootstrap, and
+dependencies required to start a PTC worker in an execution world.
 
-**Shared-file mapping（共享文件映射）**: DSH world 与 execution world
-中的路径对应到同一共享文件的关系。 _Avoid_: 仅凭相同路径字符串称为共享文件。
+**Shared-file mapping**: A relationship between paths in the DSH world and
+execution world that identifies the same shared file. _Avoid_: Calling files
+shared based only on matching path strings.
 
-**Materialized file（物化文件）**: 经授权复制到另一个 execution world
-的文件副本，具有独立的文件身份。 _Avoid_: 将副本称为共享文件映射。
+**Materialized file**: An authorized copy in another execution world with its
+own file identity. _Avoid_: Calling a copy a shared-file mapping.
 
-**Desktop reachability（桌面可达性）**: 桌面 client
-可通过其授权文件引用访问目标文件的能力。 _Avoid_: 将 DSH 或 guest
-路径直接称为桌面路径。
+**Desktop reachability**: The ability of an authorized desktop client to access
+a target file through a reference it can use. _Avoid_: Treating a DSH or guest
+path as a desktop path.
